@@ -1,5 +1,6 @@
 import subprocess
-from pathlib import Path
+import sys
+from typing import IO, Optional
 
 
 def run_musetalk(
@@ -7,7 +8,16 @@ def run_musetalk(
     config_path: str,
     output_dir: str,
     version: str = "v15",
+    log_file: Optional[IO[str]] = None,
 ):
+    """Run a MuseTalk inference render.
+
+    Streams the subprocess output line-by-line so progress is visible while the
+    render is still running. If ``log_file`` is given, output is written there
+    (and flushed per line); otherwise it goes to stdout.
+
+    Raises ``subprocess.CalledProcessError`` on a non-zero exit code.
+    """
     if version == "v15":
         unet_model = "models/musetalkV15/unet.pth"
         unet_config = "models/musetalkV15/musetalk.json"
@@ -27,8 +37,26 @@ def run_musetalk(
         "--ffmpeg_path", "/usr/bin",
     ]
 
-    subprocess.run(
+    sink = log_file or sys.stdout
+    sink.write("$ " + " ".join(cmd) + "\n")
+    sink.flush()
+
+    proc = subprocess.Popen(
         cmd,
         cwd=musetalk_dir,
-        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
     )
+
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        sink.write(line)
+        sink.flush()
+
+    returncode = proc.wait()
+    if returncode != 0:
+        sink.write(f"\n[exit code {returncode}]\n")
+        sink.flush()
+        raise subprocess.CalledProcessError(returncode, cmd)
