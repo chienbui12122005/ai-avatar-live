@@ -83,6 +83,7 @@ def page(title: str, body: str) -> str:
   <a href="/">🎬 Generate</a>
   <a href="/videos">📁 Videos</a>
   <a href="/profiles">👤 Profiles</a>
+  <a href="/live">📺 Live</a>
   <a href="/health">⚙ Health</a>
 </nav></header>
 <div class="wrap">
@@ -262,28 +263,161 @@ def result_page(job_id: str) -> str:
     )
 
 
+def live_page(slug: str) -> str:
+    """Full-bleed avatar stage: loops the profile's `idle` clip, switches to a
+    freshly rendered speaking clip (with audio) when one appears, then returns to
+    idle. Built to be captured by OBS (Browser Source) -> Virtual Camera -> Zoom.
+    """
+    s = esc(slug)
+    return f"""<!DOCTYPE html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live · {s}</title>
+<style>
+  html,body {{ margin:0; height:100%; background:#000; overflow:hidden; }}
+  #stage {{ position:fixed; inset:0; width:100%; height:100%; object-fit:cover; background:#000; }}
+  #overlay {{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background:#000; color:#e6edf3; font-family:system-ui,sans-serif; cursor:pointer; z-index:10; }}
+  #overlay button {{ font-size:20px; padding:14px 28px; border:0; border-radius:10px;
+    background:#1f6feb; color:#fff; cursor:pointer; }}
+  #badge {{ position:fixed; top:10px; left:10px; z-index:5; font-family:system-ui,sans-serif;
+    font-size:12px; color:#8b949e; background:rgba(0,0,0,.4); padding:3px 9px; border-radius:12px; }}
+</style></head>
+<body>
+<video id="stage" playsinline></video>
+<div id="badge">● idle</div>
+<div id="overlay"><button id="startbtn">▶ Start avatar stage</button></div>
+<script>
+const slug = {slug!r};
+const stage = document.getElementById('stage');
+const badge = document.getElementById('badge');
+const overlay = document.getElementById('overlay');
+let lastTs = 0, speaking = false, pending = null;
+
+// Segment-streaming state (chunked renders): play segments in order as they land.
+let segMode = false, segUrl = "", segUrls = [], segPlay = 0, segDone = false, segActive = false;
+
+function idleSrc() {{ return `/profile-clip/${{slug}}/idle`; }}
+function setBadge(t) {{ badge.textContent = t; }}
+
+function playIdle() {{
+  speaking = false; segMode = false; setBadge('● idle');
+  stage.loop = true; stage.muted = true; stage.src = idleSrc();
+  stage.play().catch(() => {{}});
+}}
+function playClip(url) {{
+  speaking = true; segMode = false; setBadge('● speaking');
+  stage.loop = false; stage.muted = false; stage.src = url;
+  stage.play().catch(() => {{}});
+}}
+
+// --- chunked streaming: start playing segment 0 while the rest render ---
+function startSegments(url) {{
+  speaking = true; segMode = true; setBadge('● speaking (stream)');
+  segUrl = url; segUrls = []; segPlay = 0; segDone = false; segActive = false;
+  pollSegments();
+}}
+async function pollSegments() {{
+  if (!segMode) return;
+  try {{
+    const d = await (await fetch(segUrl)).json();
+    segUrls = d.segments.map(s => s.url);
+    segDone = !!d.done;
+  }} catch (e) {{}}
+  if (!segActive) advanceSeg();    // kick the next segment as soon as it exists
+  if (segMode && !(segDone && segPlay >= segUrls.length)) setTimeout(pollSegments, 700);
+}}
+function advanceSeg() {{
+  if (segPlay < segUrls.length) {{
+    segActive = true;
+    const u = segUrls[segPlay++];
+    stage.loop = false; stage.muted = false; stage.src = u;
+    stage.play().catch(() => {{}});
+  }} else if (segDone) {{
+    playIdle();                    // all segments played and render finished
+  }} else {{
+    segActive = false;             // waiting for the next segment to render
+  }}
+}}
+
+stage.addEventListener('ended', () => {{
+  if (segMode) {{ advanceSeg(); return; }}
+  if (!speaking) return;           // idle loops, never fires 'ended'
+  if (pending) {{ const u = pending; pending = null; playClip(u); }}
+  else playIdle();
+}});
+
+async function poll() {{
+  try {{
+    const r = await fetch(`/api/latest?profile=${{encodeURIComponent(slug)}}&since=${{lastTs}}`);
+    const d = await r.json();
+    if (d.job) {{
+      lastTs = d.job.finished_at || lastTs;
+      if (d.job.chunked) startSegments(d.job.segments_url);
+      else if (speaking) pending = d.job.video_url;   // finish current clip first
+      else playClip(d.job.video_url);
+    }}
+  }} catch (e) {{}}
+  setTimeout(poll, 1500);
+}}
+
+async function start() {{
+  // Baseline: ignore clips that finished before the stage was opened.
+  try {{
+    const r = await fetch(`/api/latest?profile=${{encodeURIComponent(slug)}}`);
+    const d = await r.json();
+    lastTs = d.job ? (d.job.finished_at || 0) : 0;
+  }} catch (e) {{}}
+  overlay.style.display = 'none';
+  playIdle();
+  poll();
+}}
+document.getElementById('startbtn').addEventListener('click', start);
+</script>
+</body></html>"""
+
+
 def profiles_page(profiles: list[dict]) -> str:
     cards = []
     for p in profiles:
+        slug = esc(p["slug"])
         clips = p.get("clips", {})
+        prepared = p.get("prepared", {})
         clip_row = "".join(
-            f'<span class="pill" style="{"" if b in clips else "opacity:.4"}">{esc(b)}{" ✓" if b in clips else ""}</span>'
+            f'<span class="pill" style="{"" if b in clips else "opacity:.4"}">'
+            f'{esc(b)}{" ✓" if b in clips else ""}{" ⚡" if b in prepared else ""}</span>'
             for b in BEHAVIORS
         )
-        upload_forms = "".join(
-            f"""<form action="/profiles/{esc(p['slug'])}/upload" method="post" enctype="multipart/form-data" style="display:inline-block; margin:4px 6px 0 0;">
+        # Per-behavior controls: upload a clip + (if a clip exists) prepare its cache.
+        rows = []
+        for b in BEHAVIORS:
+            has_clip = b in clips
+            is_prep = b in prepared
+            prep_btn = (
+                f"""<form action="/profiles/{slug}/prepare" method="post" style="display:inline-block; margin-left:6px;">
   <input type="hidden" name="behavior" value="{esc(b)}">
-  <input type="file" name="clip" accept="image/*,video/*" required style="display:inline-block;width:auto;font-size:12px;">
-  <button class="secondary" type="submit" style="padding:5px 10px;font-size:12px;">Set {esc(b)}</button>
+  <button class="secondary" type="submit" style="padding:5px 10px;font-size:12px;" {"" if has_clip else "disabled"}>
+    {"Re-prepare ⚡" if is_prep else "Prepare ⚡"}</button>
 </form>"""
-            for b in BEHAVIORS
-        )
+            )
+            rows.append(
+                f"""<div style="margin:6px 0;">
+  <form action="/profiles/{slug}/upload" method="post" enctype="multipart/form-data" style="display:inline-block;">
+    <input type="hidden" name="behavior" value="{esc(b)}">
+    <b style="display:inline-block;width:74px;">{esc(b)}</b>
+    <input type="file" name="clip" accept="image/*,video/*" required style="display:inline-block;width:auto;font-size:12px;">
+    <button class="secondary" type="submit" style="padding:5px 10px;font-size:12px;">Set</button>
+  </form>{prep_btn}
+</div>"""
+            )
+        upload_forms = "".join(rows)
         cards.append(
             f"""<div class="card">
-  <h2>{esc(p['name'])} <span class="muted">/{esc(p['slug'])}</span></h2>
+  <h2>{esc(p['name'])} <span class="muted">/{slug}</span></h2>
   <div class="clip-set">{clip_row}</div>
+  <p class="muted" style="margin:8px 0 0;">✓ = clip uploaded · ⚡ = avatar prepared (cached → faster render)</p>
   <div style="margin-top:10px;">{upload_forms}</div>
-  <form action="/profiles/{esc(p['slug'])}/delete" method="post" style="margin-top:12px;"
+  <form action="/profiles/{slug}/delete" method="post" style="margin-top:12px;"
     onsubmit="return confirm('Delete profile {esc(p['name'])}?')">
     <button class="danger" type="submit" style="padding:4px 12px;font-size:12px;">Delete profile</button>
   </form>

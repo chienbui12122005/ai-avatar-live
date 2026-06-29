@@ -3,53 +3,32 @@ import sys
 from typing import IO, Optional
 
 
-def run_musetalk(
-    musetalk_dir: str,
-    config_path: str,
-    output_dir: str,
-    version: str = "v15",
-    log_file: Optional[IO[str]] = None,
-):
-    """Run a MuseTalk inference render.
+def model_paths(version: str):
+    """Return (unet_model_path, unet_config, version_arg) for a MuseTalk version."""
+    if version == "v15":
+        return "models/musetalkV15/unet.pth", "models/musetalkV15/musetalk.json", "v15"
+    return "models/musetalk/pytorch_model.bin", "models/musetalk/musetalk.json", "v1"
 
-    Streams the subprocess output line-by-line so progress is visible while the
-    render is still running. If ``log_file`` is given, output is written there
-    (and flushed per line); otherwise it goes to stdout.
+
+def stream_command(cmd: list, cwd: str, log_file: Optional[IO[str]] = None):
+    """Run a subprocess, streaming its combined output line-by-line to ``log_file``
+    (or stdout) so progress is visible while it runs.
 
     Raises ``subprocess.CalledProcessError`` on a non-zero exit code.
     """
-    if version == "v15":
-        unet_model = "models/musetalkV15/unet.pth"
-        unet_config = "models/musetalkV15/musetalk.json"
-        version_arg = "v15"
-    else:
-        unet_model = "models/musetalk/pytorch_model.bin"
-        unet_config = "models/musetalk/musetalk.json"
-        version_arg = "v1"
-
-    cmd = [
-        "python", "-m", "scripts.inference",
-        "--inference_config", str(config_path),
-        "--result_dir", str(output_dir),
-        "--unet_model_path", unet_model,
-        "--unet_config", unet_config,
-        "--version", version_arg,
-        "--ffmpeg_path", "/usr/bin",
-    ]
-
     sink = log_file or sys.stdout
     sink.write("$ " + " ".join(cmd) + "\n")
     sink.flush()
 
     proc = subprocess.Popen(
         cmd,
-        cwd=musetalk_dir,
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,  # never block on an interactive input() prompt
         text=True,
         bufsize=1,
     )
-
     assert proc.stdout is not None
     for line in proc.stdout:
         sink.write(line)
@@ -60,3 +39,28 @@ def run_musetalk(
         sink.write(f"\n[exit code {returncode}]\n")
         sink.flush()
         raise subprocess.CalledProcessError(returncode, cmd)
+
+
+def run_musetalk(
+    musetalk_dir: str,
+    config_path: str,
+    output_dir: str,
+    version: str = "v15",
+    log_file: Optional[IO[str]] = None,
+):
+    """Run a batch MuseTalk inference render (scripts.inference).
+
+    This path loads the models and re-preprocesses the avatar every run. For a
+    cached/faster path see app/services/musetalk_realtime.py.
+    """
+    unet_model, unet_config, version_arg = model_paths(version)
+    cmd = [
+        "python", "-m", "scripts.inference",
+        "--inference_config", str(config_path),
+        "--result_dir", str(output_dir),
+        "--unet_model_path", unet_model,
+        "--unet_config", unet_config,
+        "--version", version_arg,
+        "--ffmpeg_path", "/usr/bin",
+    ]
+    stream_command(cmd, musetalk_dir, log_file)

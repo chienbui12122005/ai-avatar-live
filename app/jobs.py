@@ -14,9 +14,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+from typing import Callable, Optional
 
 from app.services.musetalk import run_musetalk
+from app.services import musetalk_realtime as rt
+from app.services import musetalk_worker_client as worker
 
 # pending -> running -> done | failed
 PENDING = "pending"
@@ -41,6 +43,17 @@ class Job:
     profile: str = ""
     behavior: str = ""
 
+    # render path: kind="render" (default) or "prepare" (build avatar cache);
+    # realtime=True uses the cached scripts.realtime_inference path.
+    kind: str = "render"
+    realtime: bool = False
+    chunked: bool = False
+    chunk_seconds: float = 3.0
+    avatar_id: str = ""
+    video_path: str = ""
+    audio_path: str = ""
+    on_success: Optional[Callable[["Job"], None]] = None
+
     status: str = PENDING
     error: str = ""
     created_at: float = field(default_factory=time.time)
@@ -60,6 +73,9 @@ class Job:
             "status": self.status,
             "error": self.error,
             "version": self.version,
+            "kind": self.kind,
+            "realtime": self.realtime,
+            "chunked": self.chunked,
             "teacher_name": self.teacher_name,
             "audio_name": self.audio_name,
             "bbox_shift": self.bbox_shift,
@@ -106,22 +122,65 @@ class JobRegistry:
 
         try:
             with log.open("w", encoding="utf-8") as lf:
-                lf.write(f"[job {job.id}] starting render (version={job.version})\n")
-                lf.flush()
-                run_musetalk(
-                    musetalk_dir=job.musetalk_dir,
-                    config_path=job.config_path,
-                    output_dir=job.output_dir,
-                    version=job.version,
-                    log_file=lf,
+                lf.write(
+                    f"[job {job.id}] kind={job.kind} realtime={job.realtime} "
+                    f"version={job.version} avatar={job.avatar_id}\n"
                 )
+                lf.flush()
 
-            job.video_path = self._find_video(job.output_dir)
-            if not job.video_path:
-                job.status = FAILED
-                job.error = "Render finished but no .mp4 was produced (check the log)."
-            else:
+                if job.kind == "prepare":
+                    rt.prepare_avatar(
+                        musetalk_dir=job.musetalk_dir, config_path=job.config_path,
+                        result_dir=job.output_dir, version=job.version,
+                        avatar_id=job.avatar_id, video_path=job.video_path,
+                        bbox_shift=job.bbox_shift, log_file=lf,
+                    )
+                elif job.realtime and job.chunked and worker.worker_enabled():
+                    # Lowest latency: stream segments (player starts on segment 0
+                    # while the rest render). Segments land in job.output_dir.
+                    job.video_path = worker.render_chunked_via_worker(
+                        avatar_id=job.avatar_id, audio_path=job.audio_path,
+                        audio_id=job.id, out_dir=job.output_dir,
+                        chunk_seconds=job.chunk_seconds, log_file=lf,
+                    )
+                elif job.realtime and worker.worker_enabled():
+                    # Fast path: warm worker (models already loaded, materials in RAM)
+                    job.video_path = worker.render_via_worker(
+                        avatar_id=job.avatar_id, audio_path=job.audio_path,
+                        audio_id=job.id, log_file=lf,
+                    )
+                elif job.realtime:
+                    job.video_path = rt.render_realtime(
+                        musetalk_dir=job.musetalk_dir, config_path=job.config_path,
+                        result_dir=job.output_dir, version=job.version,
+                        avatar_id=job.avatar_id, video_path=job.video_path,
+                        audio_path=job.audio_path, audio_id=job.id,
+                        bbox_shift=job.bbox_shift, log_file=lf,
+                    )
+                else:
+                    run_musetalk(
+                        musetalk_dir=job.musetalk_dir, config_path=job.config_path,
+                        output_dir=job.output_dir, version=job.version, log_file=lf,
+                    )
+
+            if job.kind == "prepare":
+                # success = subprocess exit 0; no video expected
                 job.status = DONE
+            else:
+                # realtime sets video_path optimistically; verify / fall back to a glob
+                if not (job.video_path and os.path.exists(job.video_path)):
+                    job.video_path = self._find_video(job)
+                if not job.video_path:
+                    job.status = FAILED
+                    job.error = "Render finished but no .mp4 was produced (check the log)."
+                else:
+                    job.status = DONE
+
+            if job.status == DONE and job.on_success:
+                try:
+                    job.on_success(job)
+                except Exception:  # noqa: BLE001 - hook must not fail the job
+                    pass
         except Exception as e:  # noqa: BLE001 - we want to record any failure
             job.status = FAILED
             job.error = str(e)
@@ -135,11 +194,18 @@ class JobRegistry:
             job.finished_at = time.time()
 
     @staticmethod
-    def _find_video(output_dir: str) -> Optional[str]:
-        files = glob.glob(f"{output_dir}/**/*.mp4", recursive=True)
+    def _find_video(job: "Job") -> Optional[str]:
+        roots = [job.output_dir]
+        if job.realtime:
+            # realtime writes under the MuseTalk results dir, not our output_dir
+            roots.append(str(Path(job.musetalk_dir) / "results"))
+        files: list[str] = []
+        for root in roots:
+            files += glob.glob(f"{root}/**/{job.id}.mp4", recursive=True)
+            files += glob.glob(f"{root}/**/*.mp4", recursive=True)
         if not files:
             return None
-        return sorted(files, key=os.path.getmtime)[-1]
+        return sorted(set(files), key=os.path.getmtime)[-1]
 
 
 def read_log(log_path: str, max_bytes: int = 200_000) -> str:

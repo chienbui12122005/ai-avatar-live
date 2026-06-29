@@ -31,6 +31,13 @@ def _slugify(name: str) -> str:
     return slug or "teacher"
 
 
+def avatar_id(slug: str, behavior: str) -> str:
+    """Deterministic, filesystem/YAML-safe id used as the MuseTalk avatar cache key."""
+    def safe(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+    return f"{safe(slug)}__{safe(behavior)}"
+
+
 class ProfileStore:
     def __init__(self, root: str):
         self.root = Path(root)
@@ -90,8 +97,21 @@ class ProfileStore:
         with dest.open("wb") as f:
             shutil.copyfileobj(file_obj, f)
         meta.setdefault("clips", {})[behavior] = dest.name
+        # A new clip invalidates any cached avatar for this behavior.
+        meta.get("prepared", {}).pop(behavior, None)
         self._write(slug, meta)
         return str(dest)
+
+    def mark_prepared(self, slug: str, behavior: str, av_id: str) -> None:
+        meta = self.get(slug)
+        if meta is None:
+            return
+        meta.setdefault("prepared", {})[behavior] = av_id
+        self._write(slug, meta)
+
+    def is_prepared(self, slug: str, behavior: str) -> bool:
+        meta = self.get(slug)
+        return bool(meta and behavior in meta.get("prepared", {}))
 
     def clip_path(self, slug: str, behavior: str) -> Optional[str]:
         meta = self.get(slug)
