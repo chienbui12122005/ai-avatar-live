@@ -11,10 +11,11 @@ micromamba activate musetalk
 echo "===== Kill old services ====="
 
 pkill -f jupyter || true
-pkill -f "python app/main.py" || true
+pkill -f "app.main" || true
 
 echo "===== Start AI Teacher Avatar Web ====="
 
 cd /workspace/ai-teacher-avatar-web
 
-python app/main.py
+# run as a module from the repo root so the `app` package is importable
+python -m app.main
