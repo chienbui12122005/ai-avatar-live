@@ -275,7 +275,7 @@ def live_page(slug: str) -> str:
 <title>Live · {s}</title>
 <style>
   html,body {{ margin:0; height:100%; background:#000; overflow:hidden; }}
-  #stage {{ position:fixed; inset:0; width:100%; height:100%; object-fit:cover; background:#000; }}
+  #stage {{ position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }}
   #overlay {{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
     background:#000; color:#e6edf3; font-family:system-ui,sans-serif; cursor:pointer; z-index:10; }}
   #overlay button {{ font-size:20px; padding:14px 28px; border:0; border-radius:10px;

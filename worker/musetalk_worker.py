@@ -147,37 +147,42 @@ class WorkerAvatar:
         """Render one audio file to out_vid_path. Returns the next pose index so a
         caller can chain segments seamlessly."""
         import numpy as np
+        import torch
         tmp_dir = f"{self.avatar_path}/tmp_{os.getpid()}_{threading.get_ident()}"
         os.makedirs(tmp_dir, exist_ok=True)
         try:
-            whisper_input_features, librosa_length = audio_processor.get_audio_feature(
-                audio_path, weight_dtype=weight_dtype
-            )
-            whisper_chunks = audio_processor.get_whisper_chunk(
-                whisper_input_features, device, weight_dtype, whisper, librosa_length,
-                fps=fps,
-                audio_padding_length_left=ARGS.audio_padding_length_left,
-                audio_padding_length_right=ARGS.audio_padding_length_right,
-            )
-            video_num = len(whisper_chunks)
-            res_frame_queue = queue.Queue()
-            t = threading.Thread(
-                target=self._process_frames,
-                args=(res_frame_queue, video_num, start_idx, tmp_dir),
-            )
-            t.start()
+            # torch.no_grad is ESSENTIAL: without it autograd retains activations
+            # across every UNet/VAE forward and the warm process balloons to OOM
+            # (the original Avatar.inference is decorated @torch.no_grad()).
+            with torch.no_grad():
+                whisper_input_features, librosa_length = audio_processor.get_audio_feature(
+                    audio_path, weight_dtype=weight_dtype
+                )
+                whisper_chunks = audio_processor.get_whisper_chunk(
+                    whisper_input_features, device, weight_dtype, whisper, librosa_length,
+                    fps=fps,
+                    audio_padding_length_left=ARGS.audio_padding_length_left,
+                    audio_padding_length_right=ARGS.audio_padding_length_right,
+                )
+                video_num = len(whisper_chunks)
+                res_frame_queue = queue.Queue()
+                t = threading.Thread(
+                    target=self._process_frames,
+                    args=(res_frame_queue, video_num, start_idx, tmp_dir),
+                )
+                t.start()
 
-            gen = datagen(whisper_chunks, self.input_latent_list_cycle, ARGS.batch_size)
-            for whisper_batch, latent_batch in gen:
-                audio_feature_batch = pe(whisper_batch.to(device))
-                latent_batch = latent_batch.to(device=device, dtype=unet.model.dtype)
-                pred_latents = unet.model(
-                    latent_batch, timesteps, encoder_hidden_states=audio_feature_batch
-                ).sample
-                pred_latents = pred_latents.to(device=device, dtype=vae.vae.dtype)
-                recon = vae.decode_latents(pred_latents)
-                for res_frame in recon:
-                    res_frame_queue.put(res_frame)
+                gen = datagen(whisper_chunks, self.input_latent_list_cycle, ARGS.batch_size)
+                for whisper_batch, latent_batch in gen:
+                    audio_feature_batch = pe(whisper_batch.to(device))
+                    latent_batch = latent_batch.to(device=device, dtype=unet.model.dtype)
+                    pred_latents = unet.model(
+                        latent_batch, timesteps, encoder_hidden_states=audio_feature_batch
+                    ).sample
+                    pred_latents = pred_latents.to(device=device, dtype=vae.vae.dtype)
+                    recon = vae.decode_latents(pred_latents)
+                    for res_frame in recon:
+                        res_frame_queue.put(res_frame)
             t.join()
 
             tmp_video = f"{tmp_dir}/temp.mp4"

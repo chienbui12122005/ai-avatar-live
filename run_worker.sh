@@ -34,4 +34,5 @@ python "$WORKER_DIR/worker/musetalk_worker.py" \
   --unet-config "$UNET_CONFIG" \
   --whisper-dir "models/whisper" \
   --ffmpeg-path "/usr/bin" \
+  --batch-size "${MUSETALK_WORKER_BATCH:-8}" \
   --port "$WORKER_PORT"
