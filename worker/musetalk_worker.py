@@ -188,10 +188,13 @@ class WorkerAvatar:
             tmp_video = f"{tmp_dir}/temp.mp4"
             os.system(
                 f"ffmpeg -y -v warning -r {fps} -f image2 -i {tmp_dir}/%08d.png "
-                f"-vcodec libx264 -vf format=yuv420p -crf 18 {tmp_video}"
+                f"-vcodec libx264 -preset superfast -vf format=yuv420p -crf 18 {tmp_video}"
             )
             os.makedirs(os.path.dirname(out_vid_path), exist_ok=True)
-            os.system(f"ffmpeg -y -v warning -i {audio_path} -i {tmp_video} {out_vid_path}")
+            os.system(
+                f"ffmpeg -y -v warning -i {tmp_video} -i {audio_path} "
+                f"-c:v copy -c:a aac -shortest {out_vid_path}"
+            )
             return start_idx + video_num
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)

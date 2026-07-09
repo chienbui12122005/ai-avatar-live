@@ -508,7 +508,9 @@ def playground_page(profiles: list[dict]) -> str:
   .stage-box.streaming {{ border-color: #1f6feb; box-shadow: 0 0 25px rgba(31, 111, 235, 0.4); animation: pulse-border 2s infinite ease-in-out; }}
   .stage-box.error {{ border-color: #cf222e; box-shadow: 0 0 20px rgba(207, 34, 46, 0.4); }}
   
-  #play-video {{ width: 100%; height: 100%; object-fit: contain; display: block; }}
+  #play-video1, #play-video2 {{
+    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000;
+  }}
   
   .stage-badge {{
     position: absolute; top: 12px; left: 12px; z-index: 5;
@@ -640,11 +642,12 @@ def playground_page(profiles: list[dict]) -> str:
   
   <!-- Stage Display -->
   <div class="play-col-stage">
-    <div id="stage-wrapper" class="stage-box idle">
+    <div id="stage-wrapper" class="stage-box idle" style="position:relative;">
       <div id="badge-status" class="stage-badge idle">
         <span class="dot"></span> <span id="badge-text">Idle</span>
       </div>
-      <video id="play-video" playsinline></video>
+      <video id="play-video1" playsinline></video>
+      <video id="play-video2" playsinline style="display:none;"></video>
     </div>
     <div style="margin-top:10px; text-align:center;">
       <p id="player-desc" class="muted">Currently playing loop: <b>idle.mp4</b></p>
@@ -657,7 +660,8 @@ def playground_page(profiles: list[dict]) -> str:
 
 <script>
 const profMap = {prof_map_json};
-const video = document.getElementById("play-video");
+const video1 = document.getElementById("play-video1");
+const video2 = document.getElementById("play-video2");
 const stageWrapper = document.getElementById("stage-wrapper");
 const badgeStatus = document.getElementById("badge-status");
 const badgeText = document.getElementById("badge-text");
@@ -665,6 +669,9 @@ const playerDesc = document.getElementById("player-desc");
 const btnStream = document.getElementById("btn-stream");
 const warnBanner = document.getElementById("warn-banner");
 const logConsole = document.getElementById("play-log");
+
+let activeVid = video1;
+let nextVid = video2;
 
 // Drag & drop handling
 const dropzone = document.getElementById("dropzone");
@@ -684,6 +691,29 @@ function handleFileSelected(input) {{
   document.getElementById("dropzone-text").innerHTML = name ? `🎵 Selected: <b>${{name}}</b>` : "📁 Click or drag audio file here";
 }}
 
+// Bind ended listeners to both elements
+video1.addEventListener("ended", onVideoEnded);
+video2.addEventListener("ended", onVideoEnded);
+
+function swapAndPlay(loop = false, muted = false) {{
+  // Pause and hide active
+  activeVid.pause();
+  activeVid.style.display = 'none';
+  activeVid.muted = true;
+  activeVid.loop = false;
+  
+  // Show and play next
+  nextVid.style.display = 'block';
+  nextVid.muted = muted;
+  nextVid.loop = loop;
+  nextVid.play().catch(() => {{}});
+  
+  // Swap references
+  const tmp = activeVid;
+  activeVid = nextVid;
+  nextVid = tmp;
+}}
+
 // Initialize and update profile selection video state
 function updateProfileState() {{
   const slug = document.getElementById("play-profile").value;
@@ -700,29 +730,29 @@ function updateProfileState() {{
   // Load idle/preview video in player if available
   const hasClip = prof.clips && prof.clips[behavior];
   if (hasClip) {{
-    video.src = `/profile-clip/${{slug}}/${{behavior}}`;
-    video.loop = true;
-    video.muted = true;
-    video.play().catch(() => {{}});
+    activeVid.src = `/profile-clip/${{slug}}/${{behavior}}`;
+    activeVid.loop = true;
+    activeVid.muted = true;
+    activeVid.play().catch(() => {{}});
     playerDesc.innerHTML = `Currently previewing behavior: <b>${{behavior}}</b>`;
   }} else {{
     // Fallback to idle clip if the requested behavior clip doesn't exist
     const hasIdle = prof.clips && prof.clips["idle"];
     if (hasIdle) {{
-      video.src = `/profile-clip/${{slug}}/idle`;
-      video.loop = true;
-      video.muted = true;
-      video.play().catch(() => {{}});
+      activeVid.src = `/profile-clip/${{slug}}/idle`;
+      activeVid.loop = true;
+      activeVid.muted = true;
+      activeVid.play().catch(() => {{}});
       playerDesc.innerHTML = `No clip for ${{behavior}}, previewing: <b>idle</b>`;
     }} else {{
-      video.removeAttribute("src");
+      activeVid.removeAttribute("src");
       playerDesc.innerHTML = `<span style="color:#cf222e">Please upload behavior clips for this profile!</span>`;
     }}
   }}
 }}
 
 function toggleAudioMute() {{
-  video.muted = !video.muted;
+  activeVid.muted = !activeVid.muted;
 }}
 
 // Streaming Playback State
@@ -733,6 +763,7 @@ let streamingFinished = false;
 let isPlayingSegment = false;
 let pollTimeout = null;
 let statusInterval = null;
+let segWaiting = false;
 
 function setStageState(state, text) {{
   playMode = state;
@@ -766,6 +797,7 @@ async function startGeneration() {{
   playedIndex = 0;
   streamingFinished = false;
   isPlayingSegment = false;
+  segWaiting = false;
   if (pollTimeout) clearTimeout(pollTimeout);
   if (statusInterval) clearInterval(statusInterval);
   
@@ -796,7 +828,7 @@ async function startGeneration() {{
       throw new Error(data.error);
     }}
     
-    logConsole.textContent = `Job created: ${{data.job_id}}\\nWaiting for worker output...`;
+    logConsole.textContent = `Job created: ${{data.job_id}}\nWaiting for worker output...`;
     
     // Start polling job status/logs
     statusInterval = setInterval(() => pollJobStatus(data.job_id), 1200);
@@ -808,7 +840,7 @@ async function startGeneration() {{
       pollSegments(data.segments_url);
     }} else {{
       // Full render mode (Batch or realtime without chunks): must wait until complete
-      logConsole.textContent += "\\nNo chunking enabled. Waiting for full rendering...";
+      logConsole.textContent += "\nNo chunking enabled. Waiting for full rendering...";
     }}
     
   }} catch (err) {{
@@ -849,7 +881,7 @@ async function pollJobStatus(jobId) {{
       btnStream.disabled = false;
       btnStream.textContent = "🚀 Generate & Stream Realtime";
       setStageState("error", "Failed");
-      logConsole.textContent += `\\n[Job Failed] ${{statusData.error || ""}}`;
+      logConsole.textContent += `\n[Job Failed] ${{statusData.error || ""}}`;
     }}
   }} catch (e) {{}}
 }}
@@ -867,35 +899,53 @@ async function pollSegments(segmentsUrl) {{
     }}
   }} catch (e) {{}}
   
-  if (!isPlayingSegment) {{
+  if (playedIndex === 0 && segmentsList.length > 0) {{
+    advanceSegment();
+  }} else if (segWaiting && playedIndex < segmentsList.length) {{
     advanceSegment();
   }}
   
   // Continue polling unless finished and all segments played
   if (!(streamingFinished && playedIndex >= segmentsList.length)) {{
-    pollTimeout = setTimeout(() => pollSegments(segmentsUrl), 700);
+    pollTimeout = setTimeout(() => pollSegments(segmentsUrl), 600);
   }}
 }}
 
 function advanceSegment() {{
   if (playedIndex < segmentsList.length) {{
     isPlayingSegment = true;
+    segWaiting = false;
     const url = segmentsList[playedIndex++];
     
     setStageState("streaming", `Playing segment ${{playedIndex}}...`);
     playerDesc.innerHTML = `Streaming segment <b>${{playedIndex}}</b>`;
     
-    video.src = url;
-    video.loop = false;
-    video.muted = false;
-    video.play().catch(() => {{}});
+    nextVid.src = url;
+    nextVid.load();
+    swapAndPlay(false, false);
+    
+    // Pre-buffer next segment
+    if (playedIndex < segmentsList.length) {{
+      setTimeout(() => {{
+        if (playMode === "streaming" && isPlayingSegment) {{
+          nextVid.src = segmentsList[playedIndex];
+          nextVid.load();
+        }}
+      }}, 50);
+    }}
   }} else if (streamingFinished) {{
     // Finished everything! Return to idle
     finishStreaming();
   }} else {{
-    // Rendering is slower than playing, pause/buffering
+    // Rendering is slower than playing, play idle loop temporarily (fallback buffer)
     isPlayingSegment = false;
+    segWaiting = true;
     setStageState("streaming", "Buffering next segment...");
+    
+    const slug = document.getElementById("play-profile").value;
+    nextVid.src = `/profile-clip/${{slug}}/idle`;
+    nextVid.load();
+    swapAndPlay(true, true);
   }}
 }}
 
@@ -917,25 +967,25 @@ function playFullResult(videoUrl) {{
   setStageState("streaming", "Playing complete video...");
   playerDesc.innerHTML = `Playing completed full video clip.`;
   
-  video.src = videoUrl;
-  video.loop = false;
-  video.muted = false;
-  video.play().catch(() => {{}});
+  nextVid.src = videoUrl;
+  nextVid.load();
+  swapAndPlay(false, false);
   
   // Listen for full clip ended to return to idle
-  video.onended = () => {{
-    video.onended = null;
+  activeVid.onended = () => {{
+    activeVid.onended = null;
     setStageState("idle", "Idle");
     updateProfileState();
   }};
 }}
 
 // Handle segment end transition
-video.addEventListener("ended", () => {{
-  if (playMode === "streaming" && segmentsList.length > 0 && playedIndex <= segmentsList.length) {{
+function onVideoEnded(e) {{
+  if (e.target !== activeVid) return; // ignore events from pre-loading buffer
+  if (playMode === "streaming" && segmentsList.length > 0) {{
     advanceSegment();
   }}
-}});
+}}
 
 // Initialize page
 document.addEventListener("DOMContentLoaded", () => {{
@@ -944,4 +994,3 @@ document.addEventListener("DOMContentLoaded", () => {{
 </script>
 """,
     )
-
