@@ -397,7 +397,7 @@ function playNextSegment() {{
             nextVid.oncanplay = null;
             nextVid.src = urlToPreload;
             nextVid.load();
-          }
+          }}
         }}, 50);
       }}
     }};
@@ -600,7 +600,7 @@ def playground_page(profiles: list[dict]) -> str:
   }}
   .stage-box.idle {{ border-color: #1a7f37; box-shadow: 0 0 20px rgba(26, 127, 55, 0.25); }}
   .stage-box.streaming {{ border-color: #1f6feb; box-shadow: 0 0 25px rgba(31, 111, 235, 0.4); animation: pulse-border 2s infinite ease-in-out; }}
-  .stage-box.error {{ border-color: #cf222e; box-shadow: 0 0 20px rgba(207, 34, 46, 0.4); }}
+  .stage-box.error {{ border-color: #cf222e; box-shadow: 0 0 20px rgba(207, 34, 46, 0.45); }}
   
   #play-video1, #play-video2 {{
     position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000;
@@ -1034,7 +1034,7 @@ function advanceSegment() {{
             nextVid.oncanplay = null;
             nextVid.src = urlToPreload;
             nextVid.load();
-          }
+          }}
         }}, 50);
       }}
     }};
