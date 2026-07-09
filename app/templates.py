@@ -936,7 +936,7 @@ async function startGeneration() {{
       pollSegments(data.segments_url);
     }} else {{
       // Full render mode (Batch or realtime without chunks): must wait until complete
-      logConsole.textContent += "\nNo chunking enabled. Waiting for full rendering...";
+      logConsole.textContent += \`\nNo chunking enabled. Waiting for full rendering...\`;
     }}
     
   }} catch (err) {{
