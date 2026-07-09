@@ -1210,11 +1210,12 @@ async function toggleMicrophoneRecord() {{
   }}
 }}
 
-// Live Microphone Streaming (Kịch bản 1: Cắt lát 3 giây gửi liên tục)
+// Live Microphone Streaming (Kịch bản 1: Cắt lát 1.5 giây gửi liên tục)
 let micStream = null;
 let chunkRecorder = null;
 let isMicStreaming = false;
 let chunkSequence = 0;
+let currentPoseIdx = 0;
 let liveMicPlaylist = [];
 let isPlayingLiveMic = false;
 
@@ -1227,12 +1228,13 @@ async function toggleMicrophoneStream() {{
       micStream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
       isMicStreaming = true;
       chunkSequence = 0;
+      currentPoseIdx = 0;
       liveMicPlaylist = [];
       isPlayingLiveMic = false;
       
       btnMic.className = "danger";
       btnMic.innerHTML = `🛑 Stop Live Mic`;
-      logConsole.textContent = "Live microphone streaming started.\nSpeak now! Submitting 3s chunks continuously...";
+      logConsole.textContent = "Live microphone streaming started.\nSpeak now! Submitting 1.5s chunks continuously...";
       
       setStageState("live_mic", "Listening...");
       
@@ -1285,13 +1287,13 @@ function recordNextMicChunk() {{
     recordNextMicChunk();
   }};
   
-  // Record for exactly 3 seconds
+  // Record for exactly 1.5 seconds (1500ms)
   chunkRecorder.start();
   setTimeout(() => {{
     if (isMicStreaming && chunkRecorder && chunkRecorder.state === "recording") {{
       chunkRecorder.stop();
     }}
-  }}, 3000);
+  }}, 1500);
 }}
 
 async function submitAudioChunk(audioBlob, filename) {{
@@ -1307,6 +1309,7 @@ async function submitAudioChunk(audioBlob, filename) {{
   formData.append("audio", audioFile);
   formData.append("bbox_shift", bboxShift);
   formData.append("version", version);
+  formData.append("start_idx", currentPoseIdx);
   
   try {{
     const res = await fetch("/api/generate", {{
@@ -1334,6 +1337,12 @@ async function pollMicChunkStatus(jobId) {{
       
       if (statusData.status === "done") {{
         clearInterval(pollInterval);
+        
+        // Update the starting pose index for the next chunks!
+        if (statusData.next_idx !== undefined) {{
+          currentPoseIdx = statusData.next_idx;
+        }}
+        
         enqueueLiveMicVideo(`/video/${{jobId}}`);
       }} else if (statusData.status === "failed") {{
         clearInterval(pollInterval);
@@ -1342,7 +1351,7 @@ async function pollMicChunkStatus(jobId) {{
     }} catch (e) {{
       clearInterval(pollInterval);
     }}
-  }}, 1000);
+  }}, 500);
 }}
 
 function enqueueLiveMicVideo(url) {{

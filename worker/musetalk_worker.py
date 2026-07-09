@@ -304,6 +304,7 @@ class Handler(BaseHTTPRequestHandler):
         audio_path = req.get("audio_path")
         audio_id = req.get("audio_id") or "out"
         fps = int(req.get("fps") or ARGS.fps)
+        start_idx = int(req.get("start_idx") or 0)
         if not avatar_id or not audio_path:
             return self._json(400, {"error": "avatar_id and audio_path are required"})
         if not os.path.exists(audio_path):
@@ -313,13 +314,14 @@ class Handler(BaseHTTPRequestHandler):
             with _render_lock:
                 av = get_avatar(avatar_id)
                 out = os.path.join(av.video_out_path, audio_id + ".mp4")
-                av.render(audio_path, out, fps, start_idx=0)
+                next_idx = av.render(audio_path, out, fps, start_idx=start_idx)
             if not os.path.exists(out):
                 return self._json(500, {"error": "render produced no video"})
             self._json(200, {
                 "video_path": os.path.abspath(out),
                 "render_seconds": round(time.time() - t0, 2),
                 "avatar_id": avatar_id,
+                "next_idx": next_idx,
             })
         except FileNotFoundError as e:
             self._json(404, {"error": str(e)})

@@ -73,6 +73,7 @@ async def generate(
     version: str = Form("v15"),
     profile: str = Form(""),
     behavior: str = Form("idle"),
+    start_idx: int = Form(0),
 ):
     job_id = os.urandom(4).hex()
     job_dir = Path(UPLOAD_DIR) / job_id
@@ -119,14 +120,35 @@ async def generate(
     job = _start_job(
         job_id, job_dir, teacher_path, teacher_name, audio_path, audio_name,
         version, bbox_shift, used_profile, used_behavior, realtime, av_id,
-        _chunked_for(realtime),
+        _chunked_for(realtime), start_idx,
     )
-    return RedirectResponse(f"/job/{job.id}", status_code=303)
+    # If the request has an Accept header indicating it expects JSON (like our live mic client),
+    # return the JSON response instead of a redirect!
+    # Wait, FastAPI doesn't easily check Accept header automatically unless we check the Request object,
+    # but we can return RedirectResponse for HTML forms and also support direct JSON if requested.
+    # Alternatively, we can return a JSONResponse directly if it's an API request,
+    # or just return JSON always for AJAX calls. Let's see: how is `/api/generate` currently called by frontend?
+    # Ah, the frontend Javascript fetch calls `/api/generate` (which is this endpoint!).
+    # Wait! In frontend JS:
+    # `const res = await fetch("/api/generate", { ... }); const data = await res.json();`
+    # If it is a fetch, FastAPI's RedirectResponse (303 Redirect) to `/job/{job_id}` is followed by fetch automatically!
+    # And then fetch receives the response of `/job/{job_id}` (which is HTML!).
+    # Wait, but in `startGeneration()`, it expects a JSON response containing `job_id` and `chunked`!
+    # Let's check how the frontend handles `/api/generate` response!
+    # Ah! In `startGeneration()`:
+    # `const res = await fetch("/api/generate", ...)`
+    # `const data = await res.json();`
+    # Wait! If the frontend expects JSON, why did `/generate` return `RedirectResponse`?
+    # Ah! In the original code, the home page form submitted via standard HTML POST (which redirected to `/job/{id}`).
+    # So we created a separate `/api/generate` endpoint, or did they use the same endpoint?
+    # Let's check `/api/generate` route in `app/main.py`!
+    # Let's search `/api/generate` in `app/main.py` using `grep_search`.
 
 
 def _start_job(
     job_id, job_dir, teacher_path, teacher_name, audio_path, audio_name,
     version, bbox_shift, profile, behavior, realtime=False, av_id="", chunked=False,
+    start_idx=0,
 ):
     """Enqueue a render. Returns the Job.
 
@@ -161,6 +183,7 @@ def _start_job(
         avatar_id=av_id,
         video_path=str(teacher_path),
         audio_path=str(audio_path),
+        start_idx=start_idx,
     )
     registry.submit(job)
     return job
@@ -199,6 +222,7 @@ async def api_generate(
     behavior: str = Form(""),
     version: str = Form("v15"),
     bbox_shift: int = Form(0),
+    start_idx: int = Form(0),
 ):
     """Accept a TTS audio clip + a teacher profile and return job info as JSON.
 
@@ -231,6 +255,7 @@ async def api_generate(
     job = _start_job(
         job_id, job_dir, Path(clip), Path(clip).name, audio_path,
         audio.filename or "", version, bbox_shift, profile, chosen, realtime, av_id, chunked,
+        start_idx,
     )
     return {
         "job_id": job.id,

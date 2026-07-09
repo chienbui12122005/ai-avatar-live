@@ -164,6 +164,7 @@ class Handler(BaseHTTPRequestHandler):
         avatar_id = req.get("avatar_id")
         audio_path = req.get("audio_path")
         audio_id = req.get("audio_id") or "out"
+        start_idx = int(req.get("start_idx") or 0)
         if not avatar_id or not audio_path:
             return self._json(400, {"error": "avatar_id and audio_path are required"})
         
@@ -179,6 +180,7 @@ class Handler(BaseHTTPRequestHandler):
                 "video_path": os.path.abspath(out),
                 "render_seconds": round(time.time() - t0, 2),
                 "avatar_id": avatar_id,
+                "next_idx": start_idx + 75,
             })
         except Exception as e:
             self._json(500, {"error": f"{type(e).__name__}: {e}"})

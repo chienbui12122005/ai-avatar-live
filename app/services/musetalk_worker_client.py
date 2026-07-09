@@ -36,23 +36,24 @@ def render_via_worker(
     audio_path: str,
     audio_id: str,
     fps: int = 25,
+    start_idx: int = 0,
     timeout: float = 1200.0,
     log_file: Optional[IO[str]] = None,
-) -> str:
-    """Render one clip on the warm worker. Returns the output video path.
+) -> tuple[str, int]:
+    """Render one clip on the warm worker. Returns (output video path, next pose index).
 
     Raises on transport/worker error so the job is marked failed with the reason.
     """
     url = worker_url() + "/render"
     payload = json.dumps({
         "avatar_id": avatar_id, "audio_path": audio_path,
-        "audio_id": audio_id, "fps": fps,
+        "audio_id": audio_id, "fps": fps, "start_idx": start_idx,
     }).encode()
     req = urllib.request.Request(
         url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
     )
     if log_file:
-        log_file.write(f"[worker] POST {url} avatar={avatar_id} audio={audio_path}\n")
+        log_file.write(f"[worker] POST {url} avatar={avatar_id} audio={audio_path} start_idx={start_idx}\n")
         log_file.flush()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -68,7 +69,7 @@ def render_via_worker(
             f"[worker] done in {data.get('render_seconds')}s -> {data.get('video_path')}\n"
         )
         log_file.flush()
-    return data["video_path"]
+    return data["video_path"], data.get("next_idx", start_idx)
 
 
 def render_chunked_via_worker(

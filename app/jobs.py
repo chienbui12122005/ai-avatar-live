@@ -49,6 +49,8 @@ class Job:
     realtime: bool = False
     chunked: bool = False
     chunk_seconds: float = 3.0
+    start_idx: int = 0
+    next_idx: int = 0
     avatar_id: str = ""
     video_path: str = ""
     audio_path: str = ""
@@ -81,6 +83,8 @@ class Job:
             "bbox_shift": self.bbox_shift,
             "profile": self.profile,
             "behavior": self.behavior,
+            "start_idx": self.start_idx,
+            "next_idx": self.next_idx,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -145,9 +149,9 @@ class JobRegistry:
                     )
                 elif job.realtime and worker.worker_enabled():
                     # Fast path: warm worker (models already loaded, materials in RAM)
-                    job.video_path = worker.render_via_worker(
+                    job.video_path, job.next_idx = worker.render_via_worker(
                         avatar_id=job.avatar_id, audio_path=job.audio_path,
-                        audio_id=job.id, log_file=lf,
+                        audio_id=job.id, start_idx=job.start_idx, log_file=lf,
                     )
                 elif job.realtime:
                     job.video_path = rt.render_realtime(
