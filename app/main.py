@@ -381,6 +381,11 @@ def live(profile: str = ""):
     return T.live_page(slug)
 
 
+@app.get("/playground", response_class=HTMLResponse)
+def playground():
+    return T.playground_page(profiles.all())
+
+
 # --------------------------------------------------------------------------- #
 # Video management
 # --------------------------------------------------------------------------- #
@@ -481,5 +486,56 @@ def profiles_delete(slug: str):
     return RedirectResponse("/profiles", status_code=303)
 
 
+@app.post("/profiles/init-sample")
+def profiles_init_sample():
+    """Scan MuseTalk installation directory for sample videos (e.g. yongen.mp4)
+    and automatically create profile teacher instances containing them."""
+    source_dir = Path(MUSETALK_DIR) / "data" / "video"
+    candidates = []
+    if source_dir.exists() and source_dir.is_dir():
+        candidates = list(source_dir.glob("*.mp4"))
+
+    # Fallback search if the standard location is empty or shifted
+    if not candidates and os.path.exists(MUSETALK_DIR):
+        candidates = list(Path(MUSETALK_DIR).glob("**/data/video/*.mp4"))
+        if not candidates:
+            candidates = list(Path(MUSETALK_DIR).glob("**/*.mp4"))
+
+    # Filter to avoid duplicates and limit to first 3 sample files to prevent clutter
+    candidates = sorted(list(set(candidates)))[:3]
+
+    if not candidates:
+        return _error_page(
+            f"Không tìm thấy file video mẫu (.mp4) nào trong thư mục cài đặt MuseTalk ({MUSETALK_DIR}). "
+            "Vui lòng kiểm tra lại đường dẫn MUSETALK_DIR trong cấu hình."
+        )
+
+    from app.profiles import BEHAVIORS
+
+    for video_path in candidates:
+        name = video_path.stem.title()
+        # Clean slug name comparison
+        slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-") or "teacher"
+        if profiles.exists(slug):
+            continue # Already exists
+
+        prof = profiles.create(name)
+        dest_dir = profiles._dir(prof["slug"])
+
+        # Populate all teacher behaviors with the same sample video
+        for b in BEHAVIORS:
+            dest_file = dest_dir / f"{b}.mp4"
+            try:
+                shutil.copy2(video_path, dest_file)
+                prof.setdefault("clips", {})[b] = dest_file.name
+            except Exception as e:
+                return _error_page(f"Lỗi sao chép video mẫu: {e}")
+
+        profiles._write(prof["slug"], prof)
+
+    return RedirectResponse("/profiles", status_code=303)
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=APP_PORT)
+

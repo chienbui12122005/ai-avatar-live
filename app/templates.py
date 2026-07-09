@@ -84,6 +84,7 @@ def page(title: str, body: str) -> str:
   <a href="/videos">📁 Videos</a>
   <a href="/profiles">👤 Profiles</a>
   <a href="/live">📺 Live</a>
+  <a href="/playground">⚡ Playground</a>
   <a href="/health">⚙ Health</a>
 </nav></header>
 <div class="wrap">
@@ -429,14 +430,518 @@ def profiles_page(profiles: list[dict]) -> str:
         "Profiles",
         f"""
 <h1>Teacher profiles</h1>
-<form class="card" action="/profiles" method="post">
-  <label>New profile name</label>
-  <div style="display:flex; gap:10px;">
-    <input type="text" name="name" placeholder="Teacher A" required>
-    <button type="submit" style="white-space:nowrap;">Create</button>
+<div class="row" style="gap:20px;">
+  <form class="card" action="/profiles" method="post" style="flex:1.5; margin:0;">
+    <h2>Create New Profile</h2>
+    <label>New profile name</label>
+    <div style="display:flex; gap:10px;">
+      <input type="text" name="name" placeholder="Teacher A" required>
+      <button type="submit" style="white-space:nowrap;">Create</button>
+    </div>
+    <p class="muted">After creating, upload a clip for each behavior ({", ".join(BEHAVIORS)}).</p>
+  </form>
+  
+  <div class="card" style="flex:1; margin:0; display:flex; flex-direction:column; justify-content:space-between;">
+    <div>
+      <h2>Import Samples</h2>
+      <p class="muted" style="margin-top:6px; font-size:13px;">
+        Tự động tạo các Profile giáo viên từ các video mẫu có sẵn trong thư mục cài đặt của MuseTalk (như yongen.mp4, sun.mp4...).
+      </p>
+    </div>
+    <form action="/profiles/init-sample" method="post" style="margin-top:12px;">
+      <button type="submit" class="secondary" style="width:100%;">⚡ Import Samples from MuseTalk</button>
+    </form>
   </div>
-  <p class="muted">After creating, upload a clip for each behavior ({", ".join(BEHAVIORS)}).</p>
-</form>
-{cards_html}
+</div>
+<div style="margin-top:20px;">
+  {cards_html}
+</div>
 """,
     )
+
+
+def playground_page(profiles: list[dict]) -> str:
+    import json
+    # Build JS-accessible map of which clips exist and which are prepared
+    prof_map = {}
+    for p in profiles:
+        prof_map[p["slug"]] = {
+            "name": p["name"],
+            "clips": p.get("clips", {}),
+            "prepared": p.get("prepared", {})
+        }
+    prof_map_json = json.dumps(prof_map)
+
+    if profiles:
+        opts = "".join(
+            f'<option value="{esc(p["slug"])}">{esc(p["name"])}</option>' for p in profiles
+        )
+        profile_select = f'<select id="play-profile" name="profile" onchange="updateProfileState()">{opts}</select>'
+    else:
+        profile_select = (
+            '<select id="play-profile" name="profile" disabled><option value="">No profiles yet</option></select>'
+        )
+
+    behavior_opts = "".join(f'<option value="{b}">{b}</option>' for b in BEHAVIORS)
+
+    return page(
+        "Realtime Playground",
+        f"""
+<style>
+  .play-layout {{ display: flex; gap: 24px; flex-wrap: wrap; margin-top: 16px; }}
+  .play-col-ctrl {{ flex: 1; min-width: 320px; display: flex; flex-direction: column; gap: 16px; }}
+  .play-col-stage {{ flex: 1.2; min-width: 380px; display: flex; flex-direction: column; align-items: center; }}
+  
+  /* Stage Video Box */
+  .stage-box {{
+    width: 100%;
+    position: relative;
+    border-radius: 12px;
+    background: #000;
+    overflow: hidden;
+    aspect-ratio: 16/9;
+    box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+    border: 3px solid #30363d;
+    transition: all 0.5s ease;
+  }}
+  .stage-box.idle {{ border-color: #1a7f37; box-shadow: 0 0 20px rgba(26, 127, 55, 0.25); }}
+  .stage-box.streaming {{ border-color: #1f6feb; box-shadow: 0 0 25px rgba(31, 111, 235, 0.4); animation: pulse-border 2s infinite ease-in-out; }}
+  .stage-box.error {{ border-color: #cf222e; box-shadow: 0 0 20px rgba(207, 34, 46, 0.4); }}
+  
+  #play-video {{ width: 100%; height: 100%; object-fit: contain; display: block; }}
+  
+  .stage-badge {{
+    position: absolute; top: 12px; left: 12px; z-index: 5;
+    font-size: 12px; font-weight: 600; color: #fff;
+    padding: 3px 10px; border-radius: 20px;
+    background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; gap: 6px;
+  }}
+  .stage-badge .dot {{ width: 8px; height: 8px; border-radius: 50%; display: inline-block; }}
+  .stage-badge.idle .dot {{ background: #2ea043; }}
+  .stage-badge.streaming .dot {{ background: #58a6ff; animation: blink 1.2s infinite; }}
+  .stage-badge.error .dot {{ background: #f85149; }}
+  
+  @keyframes blink {{ 0%, 100% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} }}
+  @keyframes pulse-border {{
+    0%, 100% {{ border-color: #1f6feb; }}
+    50% {{ border-color: #58a6ff; }}
+  }}
+  
+  /* Upload Area */
+  .drop-zone {{
+    border: 2px dashed var(--border); border-radius: 8px; padding: 24px;
+    text-align: center; background: #0d1117; cursor: pointer; transition: border-color 0.2s;
+  }}
+  .drop-zone:hover, .drop-zone.dragover {{ border-color: var(--accent); }}
+  .drop-zone input[type=file] {{ display: none; }}
+  
+  /* Alert Banner */
+  .warn-banner {{
+    background: rgba(240, 184, 0, 0.1); border: 1px solid rgba(240, 184, 0, 0.35);
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13.5px;
+    color: #e3b341; display: none; align-items: flex-start; gap: 8px;
+  }}
+  
+  /* Log Console */
+  .log-console {{
+    background: #010409; border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; font-family: monospace; font-size: 12px; color: #39ff14;
+    overflow-y: auto; height: 260px; white-space: pre-wrap; word-break: break-all;
+    box-shadow: inset 0 0 10px rgba(0, 255, 0, 0.05);
+  }}
+  
+  /* Steps indicator */
+  .steps-wrap {{ display: flex; justify-content: space-between; margin-top: 14px; padding: 0 4px; }}
+  .step-item {{ text-align: center; font-size: 11px; color: var(--muted); flex: 1; position: relative; }}
+  .step-item::after {{
+    content: ""; position: absolute; top: 12px; left: 50%; width: 100%;
+    height: 2px; background: var(--border); z-index: 1;
+  }}
+  .step-item:last-child::after {{ display: none; }}
+  .step-dot {{
+    width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--border);
+    background: var(--card); margin: 0 auto 6px; display: flex; align-items: center;
+    justify-content: center; font-weight: bold; position: relative; z-index: 2;
+    transition: all 0.3s;
+  }}
+  .step-item.active .step-dot {{ border-color: var(--accent); color: #fff; background: var(--accent); }}
+  .step-item.done .step-dot {{ border-color: #2ea043; color: #fff; background: #2ea043; }}
+  .step-item.active {{ color: var(--fg); }}
+  .step-item.done {{ color: #2ea043; }}
+</style>
+
+<h1>Realtime Avatar Playground ⚡</h1>
+<p class="muted">Upload an audio file and see the virtual teacher lip-sync in realtime (using cache + warm model worker).</p>
+
+<div class="play-layout">
+  <!-- Controls -->
+  <div class="play-col-ctrl">
+    <div class="card" style="margin:0;">
+      <h2>Config & Upload</h2>
+      
+      <!-- Warning Banner -->
+      <div id="warn-banner" class="warn-banner">
+        <span style="font-size:16px;">⚠️</span>
+        <div>
+          <b>Hành vi này chưa được chuẩn bị (Prepared)!</b><br>
+          Hệ thống sẽ chạy ở chế độ Batch chậm hơn và không hỗ trợ phát livestream (streaming). 
+          Vui lòng vào trang <a href="/profiles" style="color:#58a6ff;">Profiles</a> nhấn <b>Prepare ⚡</b> trước.
+        </div>
+      </div>
+      
+      <div class="row" style="gap:12px; margin-bottom:12px;">
+        <div>
+          <label>Teacher profile</label>
+          {profile_select}
+        </div>
+        <div>
+          <label>Behavior</label>
+          <select id="play-behavior" name="behavior" onchange="updateProfileState()">{behavior_opts}</select>
+        </div>
+      </div>
+      
+      <div class="row" style="gap:12px; margin-bottom:12px;">
+        <div>
+          <label>bbox_shift</label>
+          <input type="number" id="play-bbox" value="0">
+        </div>
+        <div>
+          <label>Version</label>
+          <select id="play-version"><option value="v15">v1.5</option><option value="v1">v1.0</option></select>
+        </div>
+      </div>
+      
+      <label>Audio File (wav, mp3)</label>
+      <div id="dropzone" class="drop-zone" onclick="document.getElementById('play-audio').click()">
+        <span id="dropzone-text">📁 Click or drag audio file here</span>
+        <input type="file" id="play-audio" accept="audio/*" onchange="handleFileSelected(this)">
+      </div>
+      
+      <div style="margin-top: 16px;">
+        <button id="btn-stream" style="width:100%; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="startGeneration()">
+          🚀 Generate & Stream Realtime
+        </button>
+      </div>
+      
+      <!-- Steps Indicator -->
+      <div class="steps-wrap">
+        <div id="step-1" class="step-item"><div class="step-dot">1</div>Upload</div>
+        <div id="step-2" class="step-item"><div class="step-dot">2</div>Worker</div>
+        <div id="step-3" class="step-item"><div class="step-dot">3</div>Stream</div>
+        <div id="step-4" class="step-item"><div class="step-dot">4</div>Done</div>
+      </div>
+    </div>
+    
+    <div class="card" style="margin:0;">
+      <h2>Live Log Console</h2>
+      <div id="play-log" class="log-console">Waiting for render request...</div>
+    </div>
+  </div>
+  
+  <!-- Stage Display -->
+  <div class="play-col-stage">
+    <div id="stage-wrapper" class="stage-box idle">
+      <div id="badge-status" class="stage-badge idle">
+        <span class="dot"></span> <span id="badge-text">Idle</span>
+      </div>
+      <video id="play-video" playsinline></video>
+    </div>
+    <div style="margin-top:10px; text-align:center;">
+      <p id="player-desc" class="muted">Currently playing loop: <b>idle.mp4</b></p>
+      <div style="display:flex; gap:10px; justify-content:center;">
+        <button class="secondary" style="padding:6px 12px; font-size:13px;" onclick="toggleAudioMute()">Toggle Mute</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const profMap = {prof_map_json};
+const video = document.getElementById("play-video");
+const stageWrapper = document.getElementById("stage-wrapper");
+const badgeStatus = document.getElementById("badge-status");
+const badgeText = document.getElementById("badge-text");
+const playerDesc = document.getElementById("player-desc");
+const btnStream = document.getElementById("btn-stream");
+const warnBanner = document.getElementById("warn-banner");
+const logConsole = document.getElementById("play-log");
+
+// Drag & drop handling
+const dropzone = document.getElementById("dropzone");
+dropzone.addEventListener("dragover", e => {{ e.preventDefault(); dropzone.classList.add("dragover"); }});
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+dropzone.addEventListener("drop", e => {{
+  e.preventDefault();
+  dropzone.classList.remove("dragover");
+  if (e.dataTransfer.files.length) {{
+    document.getElementById("play-audio").files = e.dataTransfer.files;
+    handleFileSelected(document.getElementById("play-audio"));
+  }}
+}});
+
+function handleFileSelected(input) {{
+  const name = input.files[0] ? input.files[0].name : "";
+  document.getElementById("dropzone-text").innerHTML = name ? `🎵 Selected: <b>${{name}}</b>` : "📁 Click or drag audio file here";
+}}
+
+// Initialize and update profile selection video state
+function updateProfileState() {{
+  const slug = document.getElementById("play-profile").value;
+  const behavior = document.getElementById("play-behavior").value;
+  
+  if (!slug) return;
+  const prof = profMap[slug];
+  if (!prof) return;
+  
+  // Show warning banner if behavior not prepared
+  const isPrepared = prof.prepared && prof.prepared[behavior];
+  warnBanner.style.display = isPrepared ? "none" : "flex";
+  
+  // Load idle/preview video in player if available
+  const hasClip = prof.clips && prof.clips[behavior];
+  if (hasClip) {{
+    video.src = `/profile-clip/${{slug}}/${{behavior}}`;
+    video.loop = true;
+    video.muted = true;
+    video.play().catch(() => {{}});
+    playerDesc.innerHTML = `Currently previewing behavior: <b>${{behavior}}</b>`;
+  }} else {{
+    // Fallback to idle clip if the requested behavior clip doesn't exist
+    const hasIdle = prof.clips && prof.clips["idle"];
+    if (hasIdle) {{
+      video.src = `/profile-clip/${{slug}}/idle`;
+      video.loop = true;
+      video.muted = true;
+      video.play().catch(() => {{}});
+      playerDesc.innerHTML = `No clip for ${{behavior}}, previewing: <b>idle</b>`;
+    }} else {{
+      video.removeAttribute("src");
+      playerDesc.innerHTML = `<span style="color:#cf222e">Please upload behavior clips for this profile!</span>`;
+    }}
+  }}
+}}
+
+function toggleAudioMute() {{
+  video.muted = !video.muted;
+}}
+
+// Streaming Playback State
+let playMode = "idle"; // idle, streaming, playing_full
+let segmentsList = [];
+let playedIndex = 0;
+let streamingFinished = false;
+let isPlayingSegment = false;
+let pollTimeout = null;
+let statusInterval = null;
+
+function setStageState(state, text) {{
+  playMode = state;
+  stageWrapper.className = `stage-box ${{state}}`;
+  badgeStatus.className = `stage-badge ${{state}}`;
+  badgeText.textContent = text;
+}}
+
+function updateStepStatus(stepNum, status) {{
+  const el = document.getElementById(`step-${{stepNum}}`);
+  if (!el) return;
+  el.className = `step-item ${{status}}`;
+}}
+
+function resetSteps() {{
+  for(let i=1; i<=4; i++) updateStepStatus(i, "");
+}}
+
+async function startGeneration() {{
+  const profile = document.getElementById("play-profile").value;
+  const behavior = document.getElementById("play-behavior").value;
+  const audioFile = document.getElementById("play-audio").files[0];
+  const bboxShift = document.getElementById("play-bbox").value;
+  const version = document.getElementById("play-version").value;
+  
+  if (!profile) {{ alert("Please choose a teacher profile."); return; }}
+  if (!audioFile) {{ alert("Please select or drag an audio file first."); return; }}
+  
+  // Reset streaming state variables
+  segmentsList = [];
+  playedIndex = 0;
+  streamingFinished = false;
+  isPlayingSegment = false;
+  if (pollTimeout) clearTimeout(pollTimeout);
+  if (statusInterval) clearInterval(statusInterval);
+  
+  resetSteps();
+  updateStepStatus(1, "done");
+  updateStepStatus(2, "active");
+  
+  btnStream.disabled = true;
+  btnStream.textContent = "⌛ Rendering...";
+  logConsole.textContent = "Sending request to server...";
+  setStageState("streaming", "Generating...");
+  
+  const formData = new FormData();
+  formData.append("profile", profile);
+  formData.append("behavior", behavior);
+  formData.append("audio", audioFile);
+  formData.append("bbox_shift", bboxShift);
+  formData.append("version", version);
+  
+  try {{
+    const res = await fetch("/api/generate", {{
+      method: "POST",
+      body: formData
+    }});
+    const data = await res.json();
+    
+    if (data.error) {{
+      throw new Error(data.error);
+    }}
+    
+    logConsole.textContent = `Job created: ${{data.job_id}}\\nWaiting for worker output...`;
+    
+    // Start polling job status/logs
+    statusInterval = setInterval(() => pollJobStatus(data.job_id), 1200);
+    
+    if (data.chunked) {{
+      // Worker supports streaming chunking! We can poll and play segments immediately
+      updateStepStatus(2, "done");
+      updateStepStatus(3, "active");
+      pollSegments(data.segments_url);
+    }} else {{
+      // Full render mode (Batch or realtime without chunks): must wait until complete
+      logConsole.textContent += "\\nNo chunking enabled. Waiting for full rendering...";
+    }}
+    
+  }} catch (err) {{
+    logConsole.textContent = `[ERROR] ${{err.message || err}}`;
+    btnStream.disabled = false;
+    btnStream.textContent = "🚀 Generate & Stream Realtime";
+    setStageState("error", "Error");
+    resetSteps();
+  }}
+}}
+
+async function pollJobStatus(jobId) {{
+  try {{
+    const res = await fetch(`/job/${{jobId}}/status`);
+    const statusData = await res.json();
+    
+    logConsole.textContent = statusData.log || "No logs yet...";
+    logConsole.scrollTop = logConsole.scrollHeight;
+    
+    if (statusData.status === "done") {{
+      clearInterval(statusInterval);
+      
+      // If we are not chunked, play the full video now
+      if (!statusData.chunked) {{
+        updateStepStatus(2, "done");
+        updateStepStatus(3, "done");
+        updateStepStatus(4, "done");
+        
+        btnStream.disabled = false;
+        btnStream.textContent = "🚀 Generate & Stream Realtime";
+        
+        playFullResult(`/video/${{jobId}}`);
+      }} else {{
+        streamingFinished = true; // Signals chunked stream that all slices are rendered
+      }}
+    }} else if (statusData.status === "failed") {{
+      clearInterval(statusInterval);
+      btnStream.disabled = false;
+      btnStream.textContent = "🚀 Generate & Stream Realtime";
+      setStageState("error", "Failed");
+      logConsole.textContent += `\\n[Job Failed] ${{statusData.error || ""}}`;
+    }}
+  }} catch (e) {{}}
+}}
+
+// Chunked Streaming logic
+async function pollSegments(segmentsUrl) {{
+  if (playMode !== "streaming") return;
+  try {{
+    const res = await fetch(segmentsUrl);
+    const data = await res.json();
+    segmentsList = data.segments.map(s => s.url);
+    
+    if (data.done) {{
+      streamingFinished = true;
+    }}
+  }} catch (e) {{}}
+  
+  if (!isPlayingSegment) {{
+    advanceSegment();
+  }}
+  
+  // Continue polling unless finished and all segments played
+  if (!(streamingFinished && playedIndex >= segmentsList.length)) {{
+    pollTimeout = setTimeout(() => pollSegments(segmentsUrl), 700);
+  }}
+}}
+
+function advanceSegment() {{
+  if (playedIndex < segmentsList.length) {{
+    isPlayingSegment = true;
+    const url = segmentsList[playedIndex++];
+    
+    setStageState("streaming", `Playing segment ${{playedIndex}}...`);
+    playerDesc.innerHTML = `Streaming segment <b>${{playedIndex}}</b>`;
+    
+    video.src = url;
+    video.loop = false;
+    video.muted = false;
+    video.play().catch(() => {{}});
+  }} else if (streamingFinished) {{
+    // Finished everything! Return to idle
+    finishStreaming();
+  }} else {{
+    // Rendering is slower than playing, pause/buffering
+    isPlayingSegment = false;
+    setStageState("streaming", "Buffering next segment...");
+  }}
+}}
+
+function finishStreaming() {{
+  isPlayingSegment = false;
+  btnStream.disabled = false;
+  btnStream.textContent = "🚀 Generate & Stream Realtime";
+  
+  updateStepStatus(3, "done");
+  updateStepStatus(4, "done");
+  
+  alert("Realtime lip-sync finished successfully!");
+  
+  setStageState("idle", "Idle");
+  updateProfileState();
+}}
+
+function playFullResult(videoUrl) {{
+  setStageState("streaming", "Playing complete video...");
+  playerDesc.innerHTML = `Playing completed full video clip.`;
+  
+  video.src = videoUrl;
+  video.loop = false;
+  video.muted = false;
+  video.play().catch(() => {{}});
+  
+  // Listen for full clip ended to return to idle
+  video.onended = () => {{
+    video.onended = null;
+    setStageState("idle", "Idle");
+    updateProfileState();
+  }};
+}}
+
+// Handle segment end transition
+video.addEventListener("ended", () => {{
+  if (playMode === "streaming" && segmentsList.length > 0 && playedIndex <= segmentsList.length) {{
+    advanceSegment();
+  }}
+}});
+
+// Initialize page
+document.addEventListener("DOMContentLoaded", () => {{
+  updateProfileState();
+}});
+</script>
+""",
+    )
+
