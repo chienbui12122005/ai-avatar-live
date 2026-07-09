@@ -140,7 +140,7 @@ class WorkerAvatar:
             mask = self.mask_list_cycle[pose]
             mask_crop_box = self.mask_coords_list_cycle[pose]
             combine_frame = get_image_blending(ori_frame, res_frame, bbox, mask, mask_crop_box)
-            cv2.imwrite(f"{tmp_dir}/{str(produced).zfill(8)}.png", combine_frame)
+            cv2.imwrite(f"{tmp_dir}/{str(produced).zfill(8)}.bmp", combine_frame)
             produced += 1
 
     def render(self, audio_path, out_vid_path, fps, start_idx=0):
@@ -187,7 +187,7 @@ class WorkerAvatar:
 
             tmp_video = f"{tmp_dir}/temp.mp4"
             os.system(
-                f"ffmpeg -y -v warning -r {fps} -f image2 -i {tmp_dir}/%08d.png "
+                f"ffmpeg -y -v warning -r {fps} -f image2 -i {tmp_dir}/%08d.bmp "
                 f"-vcodec libx264 -preset superfast -vf format=yuv420p -crf 18 {tmp_video}"
             )
             os.makedirs(os.path.dirname(out_vid_path), exist_ok=True)

@@ -276,7 +276,7 @@ def live_page(slug: str) -> str:
 <title>Live · {s}</title>
 <style>
   html,body {{ margin:0; height:100%; background:#000; overflow:hidden; }}
-  #stage {{ position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }}
+  #stage1, #stage2 {{ position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; z-index:1; }}
   #overlay {{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
     background:#000; color:#e6edf3; font-family:system-ui,sans-serif; cursor:pointer; z-index:10; }}
   #overlay button {{ font-size:20px; padding:14px 28px; border:0; border-radius:10px;
@@ -285,39 +285,73 @@ def live_page(slug: str) -> str:
     font-size:12px; color:#8b949e; background:rgba(0,0,0,.4); padding:3px 9px; border-radius:12px; }}
 </style></head>
 <body>
-<video id="stage" playsinline></video>
+<video id="stage1" playsinline></video>
+<video id="stage2" playsinline style="display:none;"></video>
 <div id="badge">● idle</div>
 <div id="overlay"><button id="startbtn">▶ Start avatar stage</button></div>
 <script>
 const slug = {slug!r};
-const stage = document.getElementById('stage');
+const stage1 = document.getElementById('stage1');
+const stage2 = document.getElementById('stage2');
 const badge = document.getElementById('badge');
 const overlay = document.getElementById('overlay');
+
+let activeVid = stage1;
+let nextVid = stage2;
 let lastTs = 0, speaking = false, pending = null;
 
-// Segment-streaming state (chunked renders): play segments in order as they land.
-let segMode = false, segUrl = "", segUrls = [], segPlay = 0, segDone = false, segActive = false;
+// Segment-streaming state (chunked renders)
+let segMode = false, segUrl = "", segUrls = [], segPlay = 0, segDone = false, segWaiting = false;
 
 function idleSrc() {{ return `/profile-clip/${{slug}}/idle`; }}
 function setBadge(t) {{ badge.textContent = t; }}
 
-function playIdle() {{
-  speaking = false; segMode = false; setBadge('● idle');
-  stage.loop = true; stage.muted = true; stage.src = idleSrc();
-  stage.play().catch(() => {{}});
-}}
-function playClip(url) {{
-  speaking = true; segMode = false; setBadge('● speaking');
-  stage.loop = false; stage.muted = false; stage.src = url;
-  stage.play().catch(() => {{}});
+// Bind ended listeners to both elements
+stage1.addEventListener('ended', onVideoEnded);
+stage2.addEventListener('ended', onVideoEnded);
+
+function swapAndPlay(loop = false, muted = false) {{
+  // Pause and hide active
+  activeVid.pause();
+  activeVid.style.display = 'none';
+  activeVid.muted = true;
+  activeVid.loop = false;
+  
+  // Show and play next
+  nextVid.style.display = 'block';
+  nextVid.muted = muted;
+  nextVid.loop = loop;
+  nextVid.play().catch(() => {{}});
+  
+  // Swap references
+  const tmp = activeVid;
+  activeVid = nextVid;
+  nextVid = tmp;
 }}
 
-// --- chunked streaming: start playing segment 0 while the rest render ---
+function playIdle() {{
+  speaking = false; segMode = false; segWaiting = false; setBadge('● idle');
+  nextVid.oncanplay = null;
+  nextVid.src = idleSrc();
+  nextVid.load();
+  swapAndPlay(true, true);
+}}
+
+function playClip(url) {{
+  speaking = true; segMode = false; segWaiting = false; setBadge('● speaking');
+  nextVid.oncanplay = null;
+  nextVid.src = url;
+  nextVid.load();
+  swapAndPlay(false, false);
+}}
+
+// --- chunked streaming ---
 function startSegments(url) {{
   speaking = true; segMode = true; setBadge('● speaking (stream)');
-  segUrl = url; segUrls = []; segPlay = 0; segDone = false; segActive = false;
+  segUrl = url; segUrls = []; segPlay = 0; segDone = false; segWaiting = false;
   pollSegments();
 }}
+
 async function pollSegments() {{
   if (!segMode) return;
   try {{
@@ -325,28 +359,89 @@ async function pollSegments() {{
     segUrls = d.segments.map(s => s.url);
     segDone = !!d.done;
   }} catch (e) {{}}
-  if (!segActive) advanceSeg();    // kick the next segment as soon as it exists
-  if (segMode && !(segDone && segPlay >= segUrls.length)) setTimeout(pollSegments, 700);
-}}
-function advanceSeg() {{
-  if (segPlay < segUrls.length) {{
-    segActive = true;
-    const u = segUrls[segPlay++];
-    stage.loop = false; stage.muted = false; stage.src = u;
-    stage.play().catch(() => {{}});
-  }} else if (segDone) {{
-    playIdle();                    // all segments played and render finished
-  }} else {{
-    segActive = false;             // waiting for the next segment to render
+  
+  // Start segment 0 once ready and we have buffered at least 2 segments (or render is complete)
+  if (segPlay === 0 && (segUrls.length >= 2 || segDone)) {{
+    playNextSegment();
+  }} else if (segWaiting && segPlay < segUrls.length) {{
+    // Resume streaming if we were waiting
+    playNextSegment();
+  }}
+  
+  if (segMode && !(segDone && segPlay >= segUrls.length)) {{
+    setTimeout(pollSegments, 600);
   }}
 }}
 
-stage.addEventListener('ended', () => {{
-  if (segMode) {{ advanceSeg(); return; }}
-  if (!speaking) return;           // idle loops, never fires 'ended'
-  if (pending) {{ const u = pending; pending = null; playClip(u); }}
-  else playIdle();
-}});
+function playNextSegment() {{
+  if (segPlay < segUrls.length) {{
+    segWaiting = false;
+    const nextUrl = segUrls[segPlay++];
+    
+    // Check if nextVid is already preloaded with this URL
+    const isPreloaded = nextVid.src && nextVid.src.includes(nextUrl);
+    if (!isPreloaded) {{
+      nextVid.oncanplay = null;
+      nextVid.src = nextUrl;
+      nextVid.load();
+    }}
+    
+    const triggerPlay = () => {{
+      swapAndPlay(false, false);
+      
+      // Pre-preload the next segment immediately if available
+      if (segPlay < segUrls.length) {{
+        const urlToPreload = segUrls[segPlay];
+        setTimeout(() => {{
+          if (segMode && !segWaiting) {{
+            nextVid.oncanplay = null;
+            nextVid.src = urlToPreload;
+            nextVid.load();
+          }
+        }}, 50);
+      }}
+    }};
+    
+    if (nextVid.readyState >= 3) {{
+      triggerPlay();
+    }} else {{
+      nextVid.oncanplay = () => {{
+        nextVid.oncanplay = null;
+        triggerPlay();
+      }};
+    }}
+  }}
+}}
+
+function onVideoEnded(e) {{
+  if (e.target !== activeVid) return; // ignore events from pre-loading buffer
+  
+  if (segMode) {{
+    if (segPlay < segUrls.length) {{
+      playNextSegment();
+    }} else if (segDone) {{
+      playIdle();
+    }} else {{
+      // Render caught up, play idle loop as temporary fallback buffer
+      segWaiting = true;
+      setBadge('● speaking (buffering)');
+      nextVid.oncanplay = null;
+      nextVid.src = idleSrc();
+      nextVid.load();
+      swapAndPlay(true, true);
+    }}
+    return;
+  }}
+  
+  if (!speaking) return;
+  if (pending) {{
+    const u = pending;
+    pending = null;
+    playClip(u);
+  }} else {{
+    playIdle();
+  }}
+}}
 
 async function poll() {{
   try {{
@@ -355,7 +450,7 @@ async function poll() {{
     if (d.job) {{
       lastTs = d.job.finished_at || lastTs;
       if (d.job.chunked) startSegments(d.job.segments_url);
-      else if (speaking) pending = d.job.video_url;   // finish current clip first
+      else if (speaking) pending = d.job.video_url;
       else playClip(d.job.video_url);
     }}
   }} catch (e) {{}}
@@ -363,7 +458,6 @@ async function poll() {{
 }}
 
 async function start() {{
-  // Baseline: ignore clips that finished before the stage was opened.
   try {{
     const r = await fetch(`/api/latest?profile=${{encodeURIComponent(slug)}}`);
     const d = await r.json();
@@ -730,6 +824,7 @@ function updateProfileState() {{
   // Load idle/preview video in player if available
   const hasClip = prof.clips && prof.clips[behavior];
   if (hasClip) {{
+    activeVid.oncanplay = null;
     activeVid.src = `/profile-clip/${{slug}}/${{behavior}}`;
     activeVid.loop = true;
     activeVid.muted = true;
@@ -739,6 +834,7 @@ function updateProfileState() {{
     // Fallback to idle clip if the requested behavior clip doesn't exist
     const hasIdle = prof.clips && prof.clips["idle"];
     if (hasIdle) {{
+      activeVid.oncanplay = null;
       activeVid.src = `/profile-clip/${{slug}}/idle`;
       activeVid.loop = true;
       activeVid.muted = true;
@@ -899,7 +995,7 @@ async function pollSegments(segmentsUrl) {{
     }}
   }} catch (e) {{}}
   
-  if (playedIndex === 0 && segmentsList.length > 0) {{
+  if (playedIndex === 0 && (segmentsList.length >= 2 || streamingFinished)) {{
     advanceSegment();
   }} else if (segWaiting && playedIndex < segmentsList.length) {{
     advanceSegment();
@@ -920,18 +1016,36 @@ function advanceSegment() {{
     setStageState("streaming", `Playing segment ${{playedIndex}}...`);
     playerDesc.innerHTML = `Streaming segment <b>${{playedIndex}}</b>`;
     
-    nextVid.src = url;
-    nextVid.load();
-    swapAndPlay(false, false);
+    const isPreloaded = nextVid.src && nextVid.src.includes(url);
+    if (!isPreloaded) {{
+      nextVid.oncanplay = null;
+      nextVid.src = url;
+      nextVid.load();
+    }}
     
-    // Pre-buffer next segment
-    if (playedIndex < segmentsList.length) {{
-      setTimeout(() => {{
-        if (playMode === "streaming" && isPlayingSegment) {{
-          nextVid.src = segmentsList[playedIndex];
-          nextVid.load();
-        }}
-      }}, 50);
+    const triggerPlay = () => {{
+      swapAndPlay(false, false);
+      
+      // Pre-buffer next segment
+      if (playedIndex < segmentsList.length) {{
+        const urlToPreload = segmentsList[playedIndex];
+        setTimeout(() => {{
+          if (playMode === "streaming" && isPlayingSegment) {{
+            nextVid.oncanplay = null;
+            nextVid.src = urlToPreload;
+            nextVid.load();
+          }
+        }}, 50);
+      }}
+    }};
+    
+    if (nextVid.readyState >= 3) {{
+      triggerPlay();
+    }} else {{
+      nextVid.oncanplay = () => {{
+        nextVid.oncanplay = null;
+        triggerPlay();
+      }};
     }}
   }} else if (streamingFinished) {{
     // Finished everything! Return to idle
@@ -943,6 +1057,7 @@ function advanceSegment() {{
     setStageState("streaming", "Buffering next segment...");
     
     const slug = document.getElementById("play-profile").value;
+    nextVid.oncanplay = null;
     nextVid.src = `/profile-clip/${{slug}}/idle`;
     nextVid.load();
     swapAndPlay(true, true);
@@ -963,10 +1078,19 @@ function finishStreaming() {{
   updateProfileState();
 }}
 
+// Handle segment end transition
+function onVideoEnded(e) {{
+  if (e.target !== activeVid) return; // ignore events from pre-loading buffer
+  if (playMode === "streaming" && segmentsList.length > 0) {{
+    advanceSegment();
+  }}
+}}
+
 function playFullResult(videoUrl) {{
   setStageState("streaming", "Playing complete video...");
   playerDesc.innerHTML = `Playing completed full video clip.`;
   
+  nextVid.oncanplay = null;
   nextVid.src = videoUrl;
   nextVid.load();
   swapAndPlay(false, false);
@@ -977,14 +1101,6 @@ function playFullResult(videoUrl) {{
     setStageState("idle", "Idle");
     updateProfileState();
   }};
-}}
-
-// Handle segment end transition
-function onVideoEnded(e) {{
-  if (e.target !== activeVid) return; // ignore events from pre-loading buffer
-  if (playMode === "streaming" && segmentsList.length > 0) {{
-    advanceSegment();
-  }}
 }}
 
 // Initialize page
