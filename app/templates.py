@@ -1104,9 +1104,13 @@ function playFullResult(videoUrl) {{
 }}
 
 // Initialize page
-document.addEventListener("DOMContentLoaded", () => {{
+if (document.readyState === "loading") {{
+  document.addEventListener("DOMContentLoaded", () => {{
+    updateProfileState();
+  }});
+}} else {{
   updateProfileState();
-}});
+}}
 </script>
 """,
     )
