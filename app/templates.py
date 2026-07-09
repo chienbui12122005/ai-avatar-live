@@ -311,22 +311,38 @@ stage1.addEventListener('ended', onVideoEnded);
 stage2.addEventListener('ended', onVideoEnded);
 
 function swapAndPlay(loop = false, muted = false) {{
-  // Pause and hide active
-  activeVid.pause();
-  activeVid.style.display = 'none';
-  activeVid.muted = true;
-  activeVid.loop = false;
+  const oldVid = activeVid;
+  const newVid = nextVid;
   
-  // Show and play next
-  nextVid.style.display = 'block';
-  nextVid.muted = muted;
-  nextVid.loop = loop;
-  nextVid.play().catch(() => {{}});
+  newVid.muted = muted;
+  newVid.loop = loop;
+  newVid.style.zIndex = 2;
+  oldVid.style.zIndex = 1;
+  newVid.style.display = 'block';
   
-  // Swap references
-  const tmp = activeVid;
-  activeVid = nextVid;
-  nextVid = tmp;
+  let isSwapped = false;
+  const finalizeSwap = () => {{
+    if (isSwapped) return;
+    isSwapped = true;
+    newVid.removeEventListener('playing', finalizeSwap);
+    newVid.removeEventListener('timeupdate', finalizeSwap);
+    
+    oldVid.pause();
+    oldVid.style.display = 'none';
+    oldVid.muted = true;
+    oldVid.loop = false;
+  }};
+  
+  newVid.addEventListener('playing', finalizeSwap);
+  newVid.addEventListener('timeupdate', finalizeSwap);
+  setTimeout(finalizeSwap, 400);
+  
+  newVid.play().catch(() => {{
+    finalizeSwap();
+  }});
+  
+  activeVid = newVid;
+  nextVid = oldVid;
 }}
 
 function playIdle() {{
@@ -713,6 +729,15 @@ def playground_page(profiles: list[dict]) -> str:
       </div>
       <input type="file" id="play-audio" accept="audio/*" style="display:none;" onchange="handleFileSelected(this)">
       
+      <div style="display: flex; gap: 10px; margin-top: 10px;">
+        <button id="btn-record" type="button" class="secondary" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="toggleMicrophoneRecord()">
+          🎙️ Record Voice
+        </button>
+        <button id="btn-mic-stream" type="button" class="secondary" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="toggleMicrophoneStream()">
+          ⚡ Live Mic Stream
+        </button>
+      </div>
+      
       <div style="margin-top: 16px;">
         <button id="btn-stream" style="width:100%; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="startGeneration()">
           🚀 Generate & Stream Realtime
@@ -790,22 +815,38 @@ video1.addEventListener("ended", onVideoEnded);
 video2.addEventListener("ended", onVideoEnded);
 
 function swapAndPlay(loop = false, muted = false) {{
-  // Pause and hide active
-  activeVid.pause();
-  activeVid.style.display = 'none';
-  activeVid.muted = true;
-  activeVid.loop = false;
+  const oldVid = activeVid;
+  const newVid = nextVid;
   
-  // Show and play next
-  nextVid.style.display = 'block';
-  nextVid.muted = muted;
-  nextVid.loop = loop;
-  nextVid.play().catch(() => {{}});
+  newVid.muted = muted;
+  newVid.loop = loop;
+  newVid.style.zIndex = 2;
+  oldVid.style.zIndex = 1;
+  newVid.style.display = 'block';
   
-  // Swap references
-  const tmp = activeVid;
-  activeVid = nextVid;
-  nextVid = tmp;
+  let isSwapped = false;
+  const finalizeSwap = () => {{
+    if (isSwapped) return;
+    isSwapped = true;
+    newVid.removeEventListener('playing', finalizeSwap);
+    newVid.removeEventListener('timeupdate', finalizeSwap);
+    
+    oldVid.pause();
+    oldVid.style.display = 'none';
+    oldVid.muted = true;
+    oldVid.loop = false;
+  }};
+  
+  newVid.addEventListener('playing', finalizeSwap);
+  newVid.addEventListener('timeupdate', finalizeSwap);
+  setTimeout(finalizeSwap, 400);
+  
+  newVid.play().catch(() => {{
+    finalizeSwap();
+  }});
+  
+  activeVid = newVid;
+  nextVid = oldVid;
 }}
 
 // Initialize and update profile selection video state
@@ -1083,6 +1124,8 @@ function onVideoEnded(e) {{
   if (e.target !== activeVid) return; // ignore events from pre-loading buffer
   if (playMode === "streaming" && segmentsList.length > 0) {{
     advanceSegment();
+  }} else if (playMode === "live_mic") {{
+    playNextLiveMicSegment();
   }}
 }}
 
@@ -1101,6 +1144,241 @@ function playFullResult(videoUrl) {{
     setStageState("idle", "Idle");
     updateProfileState();
   }};
+}}
+
+let mediaRecorder = null;
+let audioChunks = [];
+let recordStartTime = 0;
+let recordTimerInterval = null;
+let isRecording = false;
+
+async function toggleMicrophoneRecord() {{
+  const btnRecord = document.getElementById("btn-record");
+  const dropzoneText = document.getElementById("dropzone-text");
+  const audioInput = document.getElementById("play-audio");
+
+  if (!isRecording) {{
+    try {{
+      const stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      
+      mediaRecorder.ondataavailable = e => {{
+        if (e.data && e.data.size > 0) {{
+          audioChunks.push(e.data);
+        }}
+      }};
+
+      mediaRecorder.onstop = () => {{
+        const audioBlob = new Blob(audioChunks, {{ type: 'audio/webm' }});
+        const audioFile = new File([audioBlob], "microphone_record.webm", {{ type: 'audio/webm' }});
+        
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(audioFile);
+        audioInput.files = dataTransfer.files;
+        
+        const durationSec = Math.round((Date.now() - recordStartTime) / 1000);
+        dropzoneText.innerHTML = `🎙️ Recorded Voice: <b>${{durationSec}}s</b>`;
+        
+        startGeneration();
+      }};
+
+      isRecording = true;
+      recordStartTime = Date.now();
+      mediaRecorder.start();
+      
+      btnRecord.className = "danger";
+      btnRecord.innerHTML = `🛑 Stop Recording (0s)`;
+      
+      recordTimerInterval = setInterval(() => {{
+        const elapsed = Math.round((Date.now() - recordStartTime) / 1000);
+        btnRecord.innerHTML = `🛑 Stop Recording (${{elapsed}}s)`;
+      }}, 1000);
+
+    }} catch (err) {{
+      alert("Error accessing microphone: " + err.message);
+    }}
+  }} else {{
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {{
+      mediaRecorder.stop();
+      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    }}
+    isRecording = false;
+    clearInterval(recordTimerInterval);
+    btnRecord.className = "secondary";
+    btnRecord.innerHTML = `🎙️ Record Voice`;
+  }}
+}}
+
+// Live Microphone Streaming (Kịch bản 1: Cắt lát 3 giây gửi liên tục)
+let micStream = null;
+let chunkRecorder = null;
+let isMicStreaming = false;
+let chunkSequence = 0;
+let liveMicPlaylist = [];
+let isPlayingLiveMic = false;
+
+async function toggleMicrophoneStream() {{
+  const btnMic = document.getElementById("btn-mic-stream");
+  const logConsole = document.getElementById("play-log");
+
+  if (!isMicStreaming) {{
+    try {{
+      micStream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
+      isMicStreaming = true;
+      chunkSequence = 0;
+      liveMicPlaylist = [];
+      isPlayingLiveMic = false;
+      
+      btnMic.className = "danger";
+      btnMic.innerHTML = `🛑 Stop Live Mic`;
+      logConsole.textContent = "Live microphone streaming started.\nSpeak now! Submitting 3s chunks continuously...";
+      
+      setStageState("live_mic", "Listening...");
+      
+      recordNextMicChunk();
+    }} catch (err) {{
+      alert("Error accessing microphone: " + err.message);
+    }}
+  }} else {{
+    stopMicStream();
+  }}
+}}
+
+function stopMicStream() {{
+  isMicStreaming = false;
+  const btnMic = document.getElementById("btn-mic-stream");
+  btnMic.className = "secondary";
+  btnMic.innerHTML = `⚡ Live Mic Stream`;
+  
+  if (chunkRecorder && chunkRecorder.state !== "inactive") {{
+    chunkRecorder.stop();
+  }}
+  if (micStream) {{
+    micStream.getTracks().forEach(track => track.stop());
+  }}
+  
+  setStageState("idle", "Idle");
+  updateProfileState();
+}}
+
+function recordNextMicChunk() {{
+  if (!isMicStreaming) return;
+  
+  let chunkChunks = [];
+  chunkRecorder = new MediaRecorder(micStream);
+  
+  chunkRecorder.ondataavailable = e => {{
+    if (e.data && e.data.size > 0) {{
+      chunkChunks.push(e.data);
+    }}
+  }};
+  
+  chunkRecorder.onstop = async () => {{
+    const audioBlob = new Blob(chunkChunks, {{ type: 'audio/webm' }});
+    const chunkName = `mic_chunk_${{chunkSequence++}}.webm`;
+    
+    // Send chunk to server
+    submitAudioChunk(audioBlob, chunkName);
+    
+    // Start recording the next chunk immediately!
+    recordNextMicChunk();
+  }};
+  
+  // Record for exactly 3 seconds
+  chunkRecorder.start();
+  setTimeout(() => {{
+    if (isMicStreaming && chunkRecorder && chunkRecorder.state === "recording") {{
+      chunkRecorder.stop();
+    }}
+  }}, 3000);
+}}
+
+async function submitAudioChunk(audioBlob, filename) {{
+  const profile = document.getElementById("play-profile").value;
+  const behavior = document.getElementById("play-behavior").value;
+  const bboxShift = document.getElementById("play-bbox").value;
+  const version = document.getElementById("play-version").value;
+  
+  const audioFile = new File([audioBlob], filename, {{ type: 'audio/webm' }});
+  const formData = new FormData();
+  formData.append("profile", profile);
+  formData.append("behavior", behavior);
+  formData.append("audio", audioFile);
+  formData.append("bbox_shift", bboxShift);
+  formData.append("version", version);
+  
+  try {{
+    const res = await fetch("/api/generate", {{
+      method: "POST",
+      body: formData
+    }});
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    
+    pollMicChunkStatus(data.job_id);
+  }} catch (err) {{
+    console.error("Failed to submit mic chunk:", err);
+  }}
+}}
+
+async function pollMicChunkStatus(jobId) {{
+  const pollInterval = setInterval(async () => {{
+    if (!isMicStreaming) {{
+      clearInterval(pollInterval);
+      return;
+    }}
+    try {{
+      const res = await fetch(`/job/${{jobId}}/status`);
+      const statusData = await res.json();
+      
+      if (statusData.status === "done") {{
+        clearInterval(pollInterval);
+        enqueueLiveMicVideo(`/video/${{jobId}}`);
+      }} else if (statusData.status === "failed") {{
+        clearInterval(pollInterval);
+        console.error("Job failed for chunk:", jobId);
+      }}
+    }} catch (e) {{
+      clearInterval(pollInterval);
+    }}
+  }}, 1000);
+}}
+
+function enqueueLiveMicVideo(url) {{
+  liveMicPlaylist.push(url);
+  if (isMicStreaming && !isPlayingLiveMic) {{
+    playNextLiveMicSegment();
+  }}
+}}
+
+function playNextLiveMicSegment() {{
+  if (!isMicStreaming) {{
+    isPlayingLiveMic = false;
+    return;
+  }}
+  
+  if (liveMicPlaylist.length > 0) {{
+    isPlayingLiveMic = true;
+    const url = liveMicPlaylist.shift();
+    
+    setStageState("live_mic", "Playing mic input...");
+    playerDesc.innerHTML = `Playing live mic speech segment`;
+    
+    nextVid.oncanplay = null;
+    nextVid.src = url;
+    nextVid.load();
+    swapAndPlay(false, false);
+  }} else {{
+    isPlayingLiveMic = false;
+    setStageState("live_mic", "Waiting for speech...");
+    
+    const slug = document.getElementById("play-profile").value;
+    nextVid.oncanplay = null;
+    nextVid.src = `/profile-clip/${{slug}}/idle`;
+    nextVid.load();
+    swapAndPlay(true, true);
+  }}
 }}
 
 // Initialize page

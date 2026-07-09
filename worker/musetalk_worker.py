@@ -215,7 +215,7 @@ def _split_audio(audio_path, out_dir, chunk_seconds):
         os.remove(old)
     os.system(
         f"ffmpeg -y -v warning -i {audio_path} -f segment "
-        f"-segment_time {chunk_seconds} -c copy {prefix}%03d.wav"
+        f"-segment_time {chunk_seconds} -ar 16000 -ac 1 -c:a pcm_s16le {prefix}%03d.wav"
     )
     return sorted(glob.glob(prefix + "*.wav"))
 

@@ -60,7 +60,7 @@ def _split_audio(audio_path, out_dir, chunk_seconds):
         "ffmpeg", "-y", "-v", "error",
         "-i", audio_path,
         "-f", "segment", "-segment_time", str(chunk_seconds),
-        "-c", "copy",
+        "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
         f"{prefix}%03d.wav"
     ]
     subprocess.run(cmd, check=True)
