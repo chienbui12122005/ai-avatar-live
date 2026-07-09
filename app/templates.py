@@ -710,8 +710,8 @@ def playground_page(profiles: list[dict]) -> str:
       <label>Audio File (wav, mp3)</label>
       <div id="dropzone" class="drop-zone" onclick="document.getElementById('play-audio').click()">
         <span id="dropzone-text">📁 Click or drag audio file here</span>
-        <input type="file" id="play-audio" accept="audio/*" onchange="handleFileSelected(this)">
       </div>
+      <input type="file" id="play-audio" accept="audio/*" style="display:none;" onchange="handleFileSelected(this)">
       
       <div style="margin-top: 16px;">
         <button id="btn-stream" style="width:100%; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="startGeneration()">
