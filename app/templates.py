@@ -360,8 +360,8 @@ async function pollSegments() {{
     segDone = !!d.done;
   }} catch (e) {{}}
   
-  // Start segment 0 once ready and we have buffered at least 2 segments (or render is complete)
-  if (segPlay === 0 && (segUrls.length >= 2 || segDone)) {{
+  // Start segment 0 once ready and we have buffered at least 1 segment (or render is complete)
+  if (segPlay === 0 && (segUrls.length >= 1 || segDone)) {{
     playNextSegment();
   }} else if (segWaiting && segPlay < segUrls.length) {{
     // Resume streaming if we were waiting
@@ -995,7 +995,7 @@ async function pollSegments(segmentsUrl) {{
     }}
   }} catch (e) {{}}
   
-  if (playedIndex === 0 && (segmentsList.length >= 2 || streamingFinished)) {{
+  if (playedIndex === 0 && (segmentsList.length >= 1 || streamingFinished)) {{
     advanceSegment();
   }} else if (segWaiting && playedIndex < segmentsList.length) {{
     advanceSegment();
